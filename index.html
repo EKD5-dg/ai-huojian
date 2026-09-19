@@ -903,6 +903,7 @@ function fitDistance() {
 }
 
 function setDistance(d) {
+  if (!Number.isFinite(d)) return;
   const dir = camera.position.clone().sub(controls.target).normalize();
   camera.position.copy(controls.target).addScaledVector(dir, THREE.MathUtils.clamp(d, controls.minDistance, controls.maxDistance));
 }
@@ -1006,6 +1007,12 @@ function earthPos(alt, range, out) {
 }
 function earthRad(rad, th, out) {
   return out.set(rad * Math.sin(th), -R_VIS + rad * Math.cos(th), 0);
+}
+
+// 两个采样点重合时归一化会得到零四元数,箭体姿态会整帧变 NaN
+function aimAtFlightPath() {
+  if (_dir.subVectors(_pb, _pa).lengthSq() < 1e-8) return;
+  rocket.quaternion.setFromUnitVectors(UP, _dir.normalize());
 }
 
 const ENG = {
@@ -1163,8 +1170,7 @@ function stepOrbit(dt) {
   L.range = next.x;
   L.vis = L.alt * ALT_VIS;
   earthPos(L.alt, L.range, _pb);
-  _dir.subVectors(_pb, _pa).normalize();
-  rocket.quaternion.setFromUnitVectors(UP, _dir);
+  aimAtFlightPath();
   basePos.copy(_pb);
   L.th = L.range / R_REAL;
   L.rad = R_VIS + L.alt * ALT_VIS;
@@ -1304,8 +1310,7 @@ function stepLaunch(dt, now) {
     L.th = L.range / R_REAL;
     L.laps = L.th / (Math.PI * 2);
     earthPos(L.alt, L.range, _pb);
-    _dir.subVectors(_pb, _pa).normalize();
-    rocket.quaternion.setFromUnitVectors(UP, _dir);
+    aimAtFlightPath();
     basePos.copy(_pb);
     earthPos(L.alt, L.range - L.orbSpeed * 2, _pa);
     el.orb.textContent = `近 200 × 远 200 km · ${L.laps.toFixed(2)} 圈`;
@@ -1470,8 +1475,11 @@ addEventListener('keydown', (e) => {
 renderer.domElement.addEventListener('dblclick', resetView);
 
 addEventListener('resize', () => {
+  // 面板被隐藏时视口是 0,算出的 aspect 与距离会变成 NaN 且再也回不来
+  if (!innerWidth || !innerHeight) return;
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.setSize(innerWidth, innerHeight);
   const fit = fitDistance();
   setDistance(camera.position.distanceTo(controls.target) * (fit / lastFit));
