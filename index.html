@@ -623,7 +623,6 @@ function earthTexture() {
 const R_VIS = 6e3;
 const ALT_VIS = .02;
 const R_REAL = 6.371e6;
-const MU = 3.986e14;
 
 function buildEarth() {
   const g = new THREE.Group();
@@ -990,7 +989,7 @@ function keyAt(col, t) {
 
 const UP = new THREE.Vector3(0, 1, 0);
 const _pa = new THREE.Vector3(), _pb = new THREE.Vector3(), _dir = new THREE.Vector3();
-const _wp = new THREE.Vector3(), _wq = new THREE.Quaternion(), _off = new THREE.Vector3(), _down = new THREE.Vector3();
+const _wp = new THREE.Vector3(), _off = new THREE.Vector3();
 
 function earthPos(alt, range, out) {
   const th = range / R_REAL;
@@ -1001,10 +1000,15 @@ function earthRad(rad, th, out) {
 }
 
 const ENG = {
-  booster: NOZZLES.filter((n) => !n.core).map((n) => ({ host: 'boosters', n })),
-  core: NOZZLES.filter((n) => n.core).map((n) => ({ host: 'stage1', n })),
-  upper: [{ host: 'stage2', n: { x: 0, y: 26.2, z: 0 } }],
+  boosters: NOZZLES.filter((n) => !n.core),
+  stage1: NOZZLES.filter((n) => n.core),
+  stage2: [{ x: 0, y: 26.2, z: 0 }],
 };
+const HOST_FLAG = { boosters: 'booster', stage1: 'core', stage2: 'upper' };
+const HOSTS = {};
+for (const host of Object.keys(ENG)) {
+  HOSTS[host] = { p: new THREE.Vector3(), q: new THREE.Quaternion(), d: new THREE.Vector3(), s: new THREE.Vector3(), o: new THREE.Vector3() };
+}
 
 // ---- 发射时序 ----
 const el = {
@@ -1050,6 +1054,7 @@ function startLaunch() {
   el.btn.textContent = '中止并复位';
   el.btn.classList.add('abort');
   el.orbRow.hidden = L.mode !== 'orb';
+  el.chips.forEach((c) => { c.disabled = true; });
 }
 
 function restoreParts() {
@@ -1088,6 +1093,7 @@ function resetLaunch() {
   el.orb.textContent = '—';
   el.btn.textContent = '点火起飞';
   el.btn.classList.remove('abort');
+  el.chips.forEach((c) => { c.disabled = false; });
   controls.target.copy(TARGET);
   camera.position.copy(TARGET).addScaledVector(DEFAULT_DIR, fitDistance());
   controls.update();
@@ -1098,19 +1104,15 @@ el.btn.addEventListener('click', () => {
   L.phase === 'idle' ? startLaunch() : resetLaunch();
 });
 
-function detach(name, obj, back, wrad, spin) {
+function detach(obj, back, wrad, spin) {
   scene.attach(obj);
   debris.push({ obj, th: L.th, rad: L.rad, wth: L.wth * back, wrad, spin, ttl: 90, axis: new THREE.Vector3(Math.random() - .5, Math.random() - .5, Math.random() - .5).normalize() });
-  if (name === 'booster') stage.booster = false;
-  if (name === 'core') { stage.core = false; stage.upper = true; }
-  if (name === 'tower') parts.tower.visible = false;
 }
 
 function stepOrbit(dt) {
   L.warp = L.t < 25 ? 1 : 10;
   const sdt = dt * L.warp;
   L.t += sdt;
-  L.throttle = Math.max(0, Math.min(1, L.throttle + sdt / 1.15));
 
   if (L.t >= SEV.meco) {
     L.phase = 'orbit';
@@ -1122,12 +1124,26 @@ function stepOrbit(dt) {
     L.camWant = 70;
     return;
   }
-  if (L.t >= SEV.tower && parts.tower.parent === rocket) { say('逃逸塔分离', 2.4); detach('tower', parts.tower, .96, -14, .5); }
-  if (L.t >= SEV.booster && parts.boosters.parent === rocket) { say('助推器分离', 2.4); detach('booster', parts.boosters, .94, -22, .32); el.eng.textContent = '芯级飞行'; }
-  if (L.t >= SEV.staging && parts.stage1.parent === rocket) { say('一二级分离 · 二级点火', 2.8); detach('core', parts.stage1, .92, -18, .26); el.eng.textContent = '二级飞行'; }
+  if (L.t >= SEV.tower && parts.tower.parent === rocket) {
+    say('逃逸塔分离', 2.4);
+    detach(parts.tower, .96, -14, .5);
+  }
+  if (L.t >= SEV.booster && parts.boosters.parent === rocket) {
+    say('助推器分离', 2.4);
+    detach(parts.boosters, .94, -22, .32);
+    stage.booster = false;
+    el.eng.textContent = '芯级飞行';
+  }
+  if (L.t >= SEV.staging && parts.stage1.parent === rocket) {
+    say('一二级分离 · 二级点火', 2.8);
+    detach(parts.stage1, .92, -18, .26);
+    stage.core = false;
+    stage.upper = true;
+    el.eng.textContent = '二级飞行';
+  }
   if (L.t >= SEV.fairing && parts.fairings[0].parent === rocket) {
     say('抛整流罩', 2.4);
-    parts.fairings.forEach((f, i) => detach('fairing', f, .95, -9 - i * 5, .4));
+    parts.fairings.forEach((f, i) => detach(f, .95, -9 - i * 5, .4));
   }
 
   const prev = orbState(L.t);
@@ -1332,36 +1348,40 @@ function stepLaunch(dt, now) {
   padLight.intensity = engTh * (lit ? 2400 * flick / lit : 0) + glow;
   padLight.position.set(rocket.position.x, L.mode === 'orb' ? 3 : L.alt + 3, rocket.position.z);
 
-  const firing = engTh > .05 && (stage.booster || stage.core || stage.upper);
-  if (firing) {
-    const pool = [...(stage.booster ? ENG.booster : []), ...(stage.core ? ENG.core : []), ...(stage.upper ? ENG.upper : [])];
+  const srcs = [];
+  for (const host of Object.keys(ENG)) {
+    if (!stage[HOST_FLAG[host]]) continue;
+    const h = HOSTS[host];
+    parts[host].getWorldPosition(h.p);
+    parts[host].getWorldQuaternion(h.q);
+    h.d.set(0, -1, 0).applyQuaternion(h.q);
+    h.s.set(1, 0, 0).applyQuaternion(h.q);
+    h.o.set(0, 0, 1).applyQuaternion(h.q);
+    for (const n of ENG[host]) srcs.push({ n, h });
+  }
+  if (engTh > .05 && srcs.length) {
     pAcc += dt * 1200 * engTh * L.warp;
     while (pAcc >= 1) {
       pAcc -= 1;
-      const e = pool[(Math.random() * pool.length) | 0];
-      const host = parts[e.host];
-      host.getWorldPosition(_wp);
-      host.getWorldQuaternion(_wq);
-      _off.set(e.n.x, e.n.y, e.n.z).applyQuaternion(_wq);
-      _wp.add(_off);
-      _down.set(0, -1, 0).applyQuaternion(_wq);
+      const { n, h } = srcs[(Math.random() * srcs.length) | 0];
       const ang = Math.random() * Math.PI * 2;
-      const sp = Math.random() * 10;
-      const side = new THREE.Vector3(1, 0, 0).applyQuaternion(_wq);
-      const other = new THREE.Vector3(0, 0, 1).applyQuaternion(_wq);
+      const spread = Math.random() * .6;
+      const ca = Math.cos(ang), sa = Math.sin(ang);
+      const speed = 60 + 110 * Math.random() * engTh;
+      _off.set(n.x, n.y, n.z).applyQuaternion(h.q);
       plume.emit(
-        _wp.x + (side.x * Math.cos(ang) + other.x * Math.sin(ang)) * sp * .06,
-        _wp.y + (side.y * Math.cos(ang) + other.y * Math.sin(ang)) * sp * .06,
-        _wp.z + (side.z * Math.cos(ang) + other.z * Math.sin(ang)) * sp * .06,
-        _down.x * (60 + 110 * Math.random() * engTh) + (Math.random() - .5) * 14,
-        _down.y * (60 + 110 * Math.random() * engTh) + (Math.random() - .5) * 14,
-        _down.z * (60 + 110 * Math.random() * engTh) + (Math.random() - .5) * 14,
+        h.p.x + _off.x + (h.s.x * ca + h.o.x * sa) * spread,
+        h.p.y + _off.y + (h.s.y * ca + h.o.y * sa) * spread,
+        h.p.z + _off.z + (h.s.z * ca + h.o.z * sa) * spread,
+        h.d.x * speed + (Math.random() - .5) * 14,
+        h.d.y * speed + (Math.random() - .5) * 14,
+        h.d.z * speed + (Math.random() - .5) * 14,
         1 + Math.random(), 5 + Math.random() * 4, .45 + Math.random() * .5,
         1, .48 + Math.random() * .34, .16, .6
       );
     }
   }
-  if (engTh > .05 && L.vis < 200 && L.mode === 'sub') {
+  if (engTh > .05 && L.vis < 200) {
     sAcc += dt * 140 * engTh;
     while (sAcc >= 1) {
       sAcc -= 1;
@@ -1423,9 +1443,8 @@ addEventListener('pointerdown', () => { controls.autoRotate = false; }, { once: 
 addEventListener('wheel', () => { controls.autoRotate = false; }, { once: true, passive: true });
 
 function resetView() {
-  const y = controls.target.y;
-  controls.target.set(0, y, 0);
-  camera.position.set(0, y, 0).addScaledVector(DEFAULT_DIR, fitDistance());
+  // 只复位视角与距离:入轨后关注点已随箭体离开世界轴
+  camera.position.copy(controls.target).addScaledVector(DEFAULT_DIR, fitDistance());
   controls.update();
 }
 addEventListener('keydown', (e) => {
