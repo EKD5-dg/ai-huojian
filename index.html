@@ -795,6 +795,13 @@ function buildFlames(parts) {
   return sets;
 }
 
+// 粒子点径上限由驱动决定,写死 512 在部分 GPU 上会被静默截断
+function maxPointSize() {
+  const gl = renderer.getContext();
+  const range = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE);
+  return Math.min(512, (range && range[1]) || 64);
+}
+
 // 粒子:贴图星点/几何体会在远距离失真,点云用自定义着色器按世界尺寸投影
 function makeEmitter(count, blending, sprite) {
   const pos = new Float32Array(count * 3);
@@ -814,14 +821,14 @@ function makeEmitter(count, blending, sprite) {
   geo.setAttribute('aAlpha', new THREE.BufferAttribute(alp, 1));
 
   const mat = new THREE.ShaderMaterial({
-    uniforms: { uTex: { value: sprite }, uScale: { value: 500 } },
+    uniforms: { uTex: { value: sprite }, uScale: { value: 500 }, uMax: { value: maxPointSize() } },
     vertexShader: `
       attribute vec3 aColor; attribute float aSize; attribute float aAlpha;
-      uniform float uScale; varying vec3 vC; varying float vA;
+      uniform float uScale; uniform float uMax; varying vec3 vC; varying float vA;
       void main() {
         vC = aColor; vA = aAlpha;
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = clamp(aSize * uScale / max(1.0, -mv.z), 0.0, 512.0);
+        gl_PointSize = clamp(aSize * uScale / max(1.0, -mv.z), 0.0, uMax);
         gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: `
@@ -937,8 +944,10 @@ camera.position.copy(TARGET).addScaledVector(DEFAULT_DIR, fitDistance());
 controls.update();
 
 const sprite = softSprite();
-const plume = makeEmitter(1600, THREE.AdditiveBlending, sprite);
-const smoke = makeEmitter(900, THREE.NormalBlending, sprite);
+// 池容量按最坏情况算:尾焰 1200/s × ×10 时标 × 0.7 s 寿命 ≈ 8400 颗同时在册,
+// 给小了环形缓冲会提前回收,拖尾被截短
+const plume = makeEmitter(8192, THREE.AdditiveBlending, sprite);
+const smoke = makeEmitter(1536, THREE.NormalBlending, sprite);
 scene.add(plume.points, smoke.points);
 
 const padLight = new THREE.PointLight(0xff7a2e, 0, 600, 1.5);
@@ -1005,8 +1014,9 @@ const ENG = {
   stage2: [{ x: 0, y: 26.2, z: 0 }],
 };
 const HOST_FLAG = { boosters: 'booster', stage1: 'core', stage2: 'upper' };
+const HOST_NAMES = Object.keys(ENG);
 const HOSTS = {};
-for (const host of Object.keys(ENG)) {
+for (const host of HOST_NAMES) {
   HOSTS[host] = { p: new THREE.Vector3(), q: new THREE.Quaternion(), d: new THREE.Vector3(), s: new THREE.Vector3(), o: new THREE.Vector3() };
 }
 
@@ -1198,7 +1208,7 @@ function stepLaunch(dt, now) {
       say('起飞', 2.6);
       el.eng.textContent = '满推力';
     }
-  } else if (L.mode === 'orb' && L.phase !== 'orbit') {
+  } else if (L.mode === 'orb' && active && L.phase !== 'orbit') {
     stepOrbit(dt);
   } else if (L.phase === 'ascent') {
     L.t += dt;
@@ -1349,7 +1359,7 @@ function stepLaunch(dt, now) {
   padLight.position.set(rocket.position.x, L.mode === 'orb' ? 3 : L.alt + 3, rocket.position.z);
 
   const srcs = [];
-  for (const host of Object.keys(ENG)) {
+  for (const host of HOST_NAMES) {
     if (!stage[HOST_FLAG[host]]) continue;
     const h = HOSTS[host];
     parts[host].getWorldPosition(h.p);
@@ -1450,7 +1460,12 @@ function resetView() {
 addEventListener('keydown', (e) => {
   if (e.repeat) return;
   if (e.key === 'r' || e.key === 'R') resetView();
-  if (e.code === 'Space') { e.preventDefault(); L.phase === 'idle' ? startLaunch() : resetLaunch(); }
+  if (e.code === 'Space') {
+    // 焦点在按钮上时交还给浏览器原生激活,避免和 click 叠加成双重切换
+    if (document.activeElement?.tagName === 'BUTTON') return;
+    e.preventDefault();
+    L.phase === 'idle' ? startLaunch() : resetLaunch();
+  }
 });
 renderer.domElement.addEventListener('dblclick', resetView);
 

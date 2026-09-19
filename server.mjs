@@ -7,8 +7,14 @@ const port = Number(process.argv[2]) || 5173;
 const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json' };
 
 createServer(async (req, res) => {
-  const path = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
-  const file = normalize(join(root, path === '/' ? 'index.html' : path));
+  const { pathname } = new URL(req.url, 'http://localhost');
+  let file;
+  try {
+    const rel = decodeURIComponent(pathname);
+    file = normalize(join(root, rel === '/' ? 'index.html' : rel));
+  } catch {
+    return res.writeHead(400).end('bad path');
+  }
   if (!file.startsWith(root)) return res.writeHead(403).end('forbidden');
   try {
     const body = await readFile(file);
