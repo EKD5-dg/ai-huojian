@@ -1228,7 +1228,8 @@ function stepLaunch(dt, now) {
       el.eng.textContent = '惯性飞行';
     }
   } else if (L.phase === 'coast') {
-    L.warp = L.alt > 1500 ? 2.8 : 1;
+    // 高空段用时间加速压缩惯性等待,最后 1.5 km 恢复实时
+    L.warp = L.alt > 1500 ? 1.6 : 1;
     const sdt = dt * L.warp;
     L.t += sdt;
     L.vel -= gravity(L.alt) * sdt;
@@ -1236,7 +1237,7 @@ function stepLaunch(dt, now) {
     L.vis = L.alt;
     L.throttle = Math.max(0, L.throttle - dt / 1.8);
     if (L.vel < 0 && L.cut) { L.cut = false; el.eng.textContent = '自由落体'; }
-    if (L.vel < -60) {
+    if (L.vel < -25) {
       dAcc += dt * 900 * L.warp;
       while (dAcc >= 1) {
         dAcc -= 1;
